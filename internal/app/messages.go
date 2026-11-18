@@ -132,13 +132,18 @@ func buildPromptWithOptions(messages []map[string]interface{}, tools []map[strin
 		}
 	}
 
+	// Keep system messages ahead of conversation turns so trailing SDK/environment
+	// system blocks do not bury the latest user request far from the end of the prompt.
+	var convParts []string
 	for _, msg := range messages {
 		role := getStr(msg, "role")
 		content := contentToString(msg["content"])
 
 		switch role {
 		case "system":
-			parts = append(parts, "[System instruction]: "+content)
+			if content != "" {
+				parts = append(parts, "[System instruction]: "+content)
+			}
 		case "assistant":
 			if tcs, ok := msg["tool_calls"].([]interface{}); ok && len(tcs) > 0 {
 				var tcStrs []string
@@ -158,76 +163,61 @@ func buildPromptWithOptions(messages []map[string]interface{}, tools []map[strin
 						name, args,
 					))
 				}
-				parts = append(parts, "[Assistant]: "+content+"\n"+strings.Join(tcStrs, "\n"))
+				convParts = append(convParts, "[Assistant]: "+content+"\n"+strings.Join(tcStrs, "\n"))
 			} else {
-				parts = append(parts, "[Assistant]: "+content)
+				convParts = append(convParts, "[Assistant]: "+content)
 			}
 		case "tool":
-			parts = append(parts, formatToolResult(getStr(msg, "name"), content))
+			convParts = append(convParts, formatToolResult(getStr(msg, "name"), content))
 		default:
 			if content != "" {
-				parts = append(parts, content)
+				convParts = append(convParts, content)
 			}
 		}
 	}
+	parts = append(parts, convParts...)
 
-	// 工具格式指令放在最前，但 agentic 客户端（Codex/rikkahub 等）的开发者提示动辄
-	// 40KB，还自带「emit function calls」这种原生工具框架的措辞，压在中间把顶部那条
-	// 格式指令冲没了 —— 模型于是要么答「我没有工具」要么答非所问（用户报的「已读乱回」）。
-	// 判据：拿 Codex 真实 42KB prompt 原样重放，模型说「无法查看本地文件系统」、不吐围栏；
-	// 同一份末尾追加提醒后立刻吐 ```tool_call```。所以末尾再锚一次格式、明确「没有别的
-	// 工具通道」，压过客户端的原生框架。
-	// 两个进一步判据（弱模型 anon 3.6 Flash、多命令任务、各 4 次）：
-	//  ① 只放格式指令、不带示例：0/4 命中，全部退化成写 ```powershell 代码块给用户看；
-	//  ② 带一个「用户问 X → 正确回复是这个 tool_call 块」的具体示例：3-4/4 命中。
-	// 所以必须给行为化的 few-shot。示例用中性工具名（run_command），实测模型仍用真实
-	// 工具名（shell_command）0/4 抄假名 —— 示例教的是「动作」不是名字，故不必按客户端
-	// 动态生成 schema。
 	if toolsInjected {
 		if parallelToolCalls && forced == "" {
 			parts = append(parts,
-				"[Host Tool Bridge — Mandatory Output Format]:\n"+
-					"1. Mechanism: You are connected to a local coding orchestrator via text protocol. "+
-					"Your internal web-browser tools are NOT used here; instead, any ```tool_call``` JSON block "+
-					"you print is automatically parsed by the host program, executed locally on the user's disk, "+
-					"and fed back to you on the next turn.\n"+
-					"2. Always ready: Because ```tool_call``` is just a plain-text JSON output format parsed by the "+
-					"host, this channel is ALWAYS open on every turn. Never check internal execution status, "+
-					"never claim tools are unavailable/restricted, and never ask the user to paste files or run commands.\n"+
-					"3. No substitutes: When the user asks to inspect directories, read/analyze a file, create/edit "+
-					"a file, or run a command, NEVER output raw code blocks (```html, ```python, ```bash, etc.) "+
-					"for the user to save/run manually — emit ```tool_call``` block(s) ONLY, with zero prose.\n"+
-					"4. Parallel vs. sequential: Emit ALL independent ```tool_call``` blocks together in one reply "+
-					"(one JSON object per block). If a later step depends on an earlier output, emit only the "+
-					"earlier step(s) first and wait for the tool result.\n"+
-					"5. Stop rule: Once a tool result shows success (e.g. exit code 0, even with empty output), "+
-					"do not repeat it. When the entire task is done, reply with a concise final answer.\n"+
-					"Examples (use the exact tool names from Available tools above):\n"+
-					"- List/read multiple targets ->\n"+
-					"```tool_call\n{\"name\": \"Glob\", \"arguments\": {\"pattern\": \"*\"}}\n```\n"+
-					"```tool_call\n{\"name\": \"Read\", \"arguments\": {\"file_path\": \"foo.html\"}}\n```\n"+
+				"[Client Tool Protocol]: Your built-in web/sandbox tools are not used in this session. "+
+					"Instead, this API gateway forwards plain-text ```tool_call``` JSON blocks to the user's local "+
+					"coding client, executes them on the user's machine, and sends the results back on the next turn.\n"+
+					"- This ```tool_call``` text protocol is always active on every turn. Skip any internal tool-quota "+
+					"or tool-availability checks — do not inspect internal execution status, never claim tools are "+
+					"unavailable or depleted, and never ask the user to paste files or run commands.\n"+
+					"- Whenever the user names any local folder, repo path, or file (even without an extension, "+
+					"such as `src/foo` or `api-gateways\\bar`) and asks to analyze, inspect, review, create, edit, "+
+					"or run something, inspect or act on the workspace with ```tool_call``` blocks first rather than "+
+					"answering from general knowledge or outputting raw code blocks (```html, ```python, ```bash, etc.).\n"+
+					"- Emit all independent ```tool_call``` blocks together in one reply (one JSON object per block) "+
+					"with no prose before them. For dependent steps, emit only the earlier step(s) first.\n"+
+					"- Once a tool result confirms success (e.g. exit code 0 or file written), stop calling tools "+
+					"and reply with a concise final answer.\n"+
+					"Examples (using exact tool names from Available tools above):\n"+
+					"- Inspect a directory path ->\n"+
+					"```tool_call\n{\"name\": \"Glob\", \"arguments\": {\"pattern\": \"api-gateways/bar/**/*\"}}\n```\n"+
+					"- Read multiple files ->\n"+
+					"```tool_call\n{\"name\": \"Read\", \"arguments\": {\"file_path\": \"a.md\"}}\n```\n"+
+					"```tool_call\n{\"name\": \"Read\", \"arguments\": {\"file_path\": \"b.md\"}}\n```\n"+
 					"- Create/write a file ->\n"+
-					"```tool_call\n{\"name\": \"Write\", \"arguments\": {\"file_path\": \"index.html\", \"content\": \"<h1>Hi</h1>\"}}\n```\n"+
-					"FINAL DIRECTIVE: If the user's latest message asks to check files/directories, analyze a workspace "+
-					"file, or create/edit/run anything, start your reply immediately with ```tool_call right now.")
+					"```tool_call\n{\"name\": \"Write\", \"arguments\": {\"file_path\": \"index.html\", \"content\": \"<h1>Hi</h1>\"}}\n```")
 		} else {
 			parts = append(parts,
-				"[Host Tool Bridge — Mandatory Output Format]:\n"+
-					"1. Mechanism: You are connected to a local coding orchestrator via text protocol. "+
-					"Your internal web-browser tools are NOT used here; instead, any ```tool_call``` JSON block "+
-					"you print is automatically parsed by the host program, executed locally on the user's disk, "+
-					"and fed back to you on the next turn.\n"+
-					"2. Always ready: Because ```tool_call``` is just a plain-text JSON output format parsed by the "+
-					"host, this channel is ALWAYS open on every turn. Never check internal execution status, "+
-					"never claim tools are unavailable/restricted, and never ask the user to paste files or run commands.\n"+
-					"3. No substitutes: Reply with ONE ```tool_call``` block and nothing else — never output raw "+
-					"code blocks (```html, ```python, ```bash, etc.) for the user to save/run manually.\n"+
-					"4. Stop rule: Once a tool result shows success (e.g. exit code 0, even with empty output), "+
-					"do not repeat it. When the entire task is done, reply with a concise final answer.\n"+
-					"Example (use the exact tool name from Available tools above):\n"+
-					"```tool_call\n{\"name\": \"Glob\", \"arguments\": {\"pattern\": \"*\"}}\n```\n"+
-					"FINAL DIRECTIVE: If the user's latest message asks to check files/directories, analyze a workspace "+
-					"file, or create/edit/run anything, start your reply immediately with ONE ```tool_call right now.")
+				"[Client Tool Protocol]: Your built-in web/sandbox tools are not used in this session. "+
+					"Instead, this API gateway forwards plain-text ```tool_call``` JSON blocks to the user's local "+
+					"coding client, executes them on the user's machine, and sends the results back on the next turn.\n"+
+					"- This ```tool_call``` text protocol is always active on every turn. Skip any internal tool-quota "+
+					"or tool-availability checks — do not inspect internal execution status, never claim tools are "+
+					"unavailable or depleted, and never ask the user to paste files or run commands.\n"+
+					"- Whenever the user names any local folder, repo path, or file (even without an extension, "+
+					"such as `src/foo` or `api-gateways\\bar`) and asks to analyze, inspect, review, create, edit, "+
+					"or run something, inspect or act on the workspace with a ```tool_call``` block first rather than "+
+					"answering from general knowledge or outputting raw code blocks.\n"+
+					"- Emit ONE ```tool_call``` block and nothing else.\n"+
+					"- Once a tool result confirms success, stop calling tools and reply with a concise final answer.\n"+
+					"Example (using an exact tool name from Available tools above):\n"+
+					"```tool_call\n{\"name\": \"Glob\", \"arguments\": {\"pattern\": \"*\"}}\n```")
 		}
 	}
 

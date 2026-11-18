@@ -247,11 +247,11 @@ func TestParallelToolCallsPromptAndParse(t *testing.T) {
 	msgs := []map[string]interface{}{{"role": "user", "content": "Read a.txt and b.txt"}}
 
 	parallelPrompt := buildPromptWithOptions(msgs, tools, "auto", true)
-	if !strings.Contains(parallelPrompt, "Emit ALL independent") {
+	if !strings.Contains(parallelPrompt, "Emit all independent") {
 		t.Fatalf("expected parallel tool prompt, got: %s", parallelPrompt)
 	}
 	singlePrompt := buildPromptWithOptions(msgs, tools, "auto", false)
-	if !strings.Contains(singlePrompt, "Reply with ONE ```tool_call``` block") {
+	if !strings.Contains(singlePrompt, "Emit ONE ```tool_call``` block") {
 		t.Fatalf("expected single tool prompt when parallel=false, got: %s", singlePrompt)
 	}
 
@@ -266,5 +266,23 @@ func TestParallelToolCallsPromptAndParse(t *testing.T) {
 	}
 	if calls[0].Function.Name != "read_file" || calls[1].Function.Name != "read_file" {
 		t.Fatalf("unexpected tool names: %+v", calls)
+	}
+}
+
+func TestSystemMessagesPlacedBeforeUserTurn(t *testing.T) {
+	msgs := []map[string]interface{}{
+		{"role": "system", "content": "SYS_HEAD"},
+		{"role": "user", "content": "USER_QUERY"},
+		{"role": "system", "content": "SYS_TRAILING_ENV"},
+	}
+	prompt := buildPromptWithOptions(msgs, nil, "auto", true)
+	idxHead := strings.Index(prompt, "SYS_HEAD")
+	idxTail := strings.Index(prompt, "SYS_TRAILING_ENV")
+	idxUser := strings.Index(prompt, "USER_QUERY")
+	if idxHead < 0 || idxTail < 0 || idxUser < 0 {
+		t.Fatalf("missing message content in prompt: %s", prompt)
+	}
+	if !(idxHead < idxTail && idxTail < idxUser) {
+		t.Fatalf("expected system messages before user turn, got head=%d tail=%d user=%d", idxHead, idxTail, idxUser)
 	}
 }
