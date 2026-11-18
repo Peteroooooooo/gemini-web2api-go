@@ -108,6 +108,15 @@ func TestNote1PSIDTSAttemptSkipsNetworkError(t *testing.T) {
 	}
 }
 
+func TestIsDeviceBoundCookie(t *testing.T) {
+	if !isDeviceBoundCookie("__Secure-1PSID=a; __Secure-1PSIDRTS=b") {
+		t.Fatal("带 1PSIDRTS 应判为设备绑定")
+	}
+	if isDeviceBoundCookie("__Secure-1PSID=a; __Secure-1PSIDTS=b") {
+		t.Fatal("只有 1PSIDTS 不是设备绑定")
+	}
+}
+
 func TestUniqueKeepOrder(t *testing.T) {
 	got := uniqueKeepOrder([]string{"SIDCC", "__Secure-1PSIDTS", "SIDCC", "", "__Secure-1PSIDTS"})
 	if strings.Join(got, ",") != "SIDCC,__Secure-1PSIDTS" {

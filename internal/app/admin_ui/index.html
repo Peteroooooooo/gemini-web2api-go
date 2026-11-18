@@ -331,6 +331,17 @@
                height: calc(100vh - var(--topbar-h) - 44px); margin-bottom: 0; }
   .table-scroll { flex: 1; min-height: 0; overflow: auto; }
   .table-scroll thead th { position: sticky; top: 0; z-index: 1; background: var(--card); }
+  /* 请求记录：列宽总和固定，窄屏横向滚动而不是把最后一列挤成一字一行；
+     错误单独占一整行、只显示一行，悬停看全文 */
+  #reqTable { min-width: 1020px; }
+  #reqTable td { vertical-align: middle; }
+  #reqTable .ep-cell { display: flex; align-items: center; gap: 6px; min-width: 0; white-space: nowrap; }
+  #reqTable .ep-cell .ep { background: none; padding: 0; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  #reqTable .ep-cell .badge { flex: none; padding: 1px 8px; }
+  #reqTable tr.has-err td { border-bottom: none; padding-bottom: 4px; }
+  #reqTable tr.err-row td { padding-top: 0; color: var(--fail); font-size: 12px;
+                            white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #reqTable tbody tr.err-row:hover, #reqTable tbody tr.has-err:hover { background: transparent; }
   .pager { display: flex; align-items: center; justify-content: space-between;
            gap: 12px; padding-top: 14px; margin-top: 4px; flex-wrap: wrap;
            font-size: 13px; border-top: 1px solid var(--outline-soft); }
@@ -419,6 +430,11 @@ const api = async (path, opts = {}) => {
 
 const fmt = {
   ts: (sec) => new Date(sec * 1000).toLocaleString('zh-CN', { hour12: false }),
+  // 列表里用的短格式：MM/DD HH:mm:ss，完整时间放 title
+  tsShort: (sec) => {
+    const d = new Date(sec * 1000), p = (n) => String(n).padStart(2, '0');
+    return `${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  },
   ms: (ms) => ms == null ? '-' : (ms < 1000 ? ms + 'ms' : (ms/1000).toFixed(2) + 's'),
   num: (n) => (n || 0).toLocaleString(),
   pct: (n) => (n * 100).toFixed(1) + '%',
@@ -594,10 +610,10 @@ const pages = {
         <div class="table-scroll">
           <table id="reqTable">
             <colgroup>
-              <col style="width:140px"><col style="width:150px"><col style="width:130px">
-              <col style="width:96px"><col style="width:70px"><col style="width:84px">
-              <col style="width:84px"><col style="width:110px"><col style="width:64px">
-              <col style="width:64px"><col>
+              <col style="width:108px"><col style="width:172px"><col style="width:112px">
+              <col style="width:76px"><col style="width:86px"><col style="width:58px">
+              <col style="width:64px"><col style="width:68px"><col style="width:66px">
+              <col style="width:54px"><col>
             </colgroup>
             <thead><tr>
               <th class="nw">时间</th><th class="nw">模型</th><th class="nw">实际模型</th>
@@ -716,6 +732,7 @@ const pages = {
                 <td class="nw" title="${LANG === 'en' ? 'Total ' + a.cookie_count + ' cookies, key items: ' + (a.key_cookies||[]).join(' / ') : '共 ' + a.cookie_count + ' 个 cookie，关键项：' + (a.key_cookies||[]).join(' / ')}">
                   <span class="badge ${a.has_1psidts ? 'ok' : 'warn'}">${(a.key_cookies||[]).length}/9 项</span>
                   ${a.has_1psidts ? '' : '<span class="badge warn" title="缺 __Secure-1PSIDTS，首次保活会尝试补发；失败请用 Firefox 重新导出">缺 TS</span>'}
+                  ${a.device_bound ? '<span class="badge warn" title="Chrome 设备绑定会话（含 PSIDRTS）：保活续不了 1PSIDTS，几小时后失效。用 Firefox 登录后重新导出">设备绑定</span>' : ''}
                 </td>
                 <td class="pre nw">${a.sapisid_tail ? '…' + escapeHtml(a.sapisid_tail) : '—'}</td>
                 <td class="num nw">${a.fail_count > 0 ? '<span class="badge fail">' + a.fail_count + '</span>' : 0}</td>
@@ -940,8 +957,8 @@ async function loadReqs() {
   const tbody = document.querySelector('#reqTable tbody');
   if (!tbody) return;
   tbody.innerHTML = (data.items || []).map(r => `
-    <tr>
-      <td class="nw muted">${fmt.ts(r.ts)}</td>
+    <tr${r.error ? ' class="has-err"' : ''}>
+      <td class="nw muted" title="${fmt.ts(r.ts)}">${fmt.tsShort(r.ts)}</td>
       <td class="truncate" title="${escapeHtml(r.model)}">${escapeHtml(r.model)}</td>
       <td class="nw">${upstreamCell(r)}</td>
       <td class="nw truncate">${r.proxy_name ? escapeHtml(t(r.proxy_name)) : '<span class="badge muted">' + t('直连') + '</span>'}</td>
@@ -953,11 +970,9 @@ async function loadReqs() {
       <td class="num nw">${fmt.ms(r.total_ms)}</td>
       <td class="num nw">${fmt.num(r.prompt_tokens)}</td>
       <td class="num nw">${fmt.num(r.output_tokens)}</td>
-      <td><span class="pre">${escapeHtml(r.endpoint)}${r.stream ? ' <span class="badge muted">stream</span>' : ''}</span>
-        ${r.error ? '<div class="pre clamp2" style="color:var(--fail);margin-top:4px" title="'
-          + escapeHtml(t(r.error)) + '"><b>' + t('错误：') + '</b>' + escapeHtml(t(r.error)) + '</div>' : ''}
-      </td>
-    </tr>`).join('') || '<tr><td colspan="11" class="empty">还没有请求记录</td></tr>';
+      <td title="${escapeHtml(r.endpoint)}${r.stream ? ' (stream)' : ''}"><span class="ep-cell"><code class="ep">${escapeHtml(r.endpoint)}</code>${r.stream ? '<span class="badge muted">stream</span>' : ''}</span></td>
+    </tr>${r.error ? `
+    <tr class="err-row"><td colspan="11" title="${escapeHtml(t(r.error))}"><b>${t('错误：')}</b>${escapeHtml(t(r.error))}</td></tr>` : ''}`).join('') || '<tr><td colspan="11" class="empty">还没有请求记录</td></tr>';
   const size = reqPageSize();
   const total = data.total || 0;
   const page = Math.floor(reqOffset / size) + 1;

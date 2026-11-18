@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -161,7 +162,8 @@ func note1PSIDTSAttempt(id int64, err error) {
 	// 成功、401/403、429 都记时间，避免紧接着再打。网络错误不记，允许立刻重试。
 	if err != nil {
 		msg := err.Error()
-		if !strings.Contains(msg, "HTTP 401") &&
+		if !errors.Is(err, errDeviceBound) &&
+			!strings.Contains(msg, "HTTP 401") &&
 			!strings.Contains(msg, "HTTP 403") &&
 			!strings.Contains(msg, "HTTP 429") {
 			return
@@ -197,8 +199,21 @@ func rotate1PSIDTS(cookie, proxyURL string) (string, []string, error) {
 	if status != 200 {
 		return cookie, nil, fmt.Errorf("RotateCookies 1PSIDTS 返回 HTTP %d: %s", status, truncate(string(respBody), 120))
 	}
+	// 200 却没换发 1PSIDTS：设备绑定（DBSC）会话就是这样，只回一个 1PSIDCC。
+	// 以前把它当成功，日志看着在保活，号几小时后照样死。
+	if !slices.Contains(setCookieNames(setCookie), "__Secure-1PSIDTS") {
+		return cookie, nil, errDeviceBound
+	}
 	merged := mergeSetCookie(cookie, setCookie)
 	return merged, setCookieNames(setCookie), nil
+}
+
+var errDeviceBound = errors.New("RotateCookies 返回 200 但没有换发 __Secure-1PSIDTS：" +
+	"这是 Chrome 设备绑定会话，保活续不了，几小时后失效；请用 Firefox 登录后重新导出 cookie")
+
+// isDeviceBoundCookie：Chrome DBSC 会话带 *PSIDRTS，这类 cookie 的 1PSIDTS 换发不了。
+func isDeviceBoundCookie(cookie string) bool {
+	return cookieValue(cookie, "__Secure-1PSIDRTS") != "" || cookieValue(cookie, "__Secure-3PSIDRTS") != ""
 }
 
 // rotateSIDCC 走浏览器 iframe 那条：GET 轮转页拿会话 id，再 POST [658, id]。
