@@ -516,7 +516,7 @@ func prepareGemini(w http.ResponseWriter, r *http.Request, model string) (*gemin
 // run 调上游；多轮开关的分流跟 /v1/chat/completions 一致。
 func (g *geminiCall) run(onDelta, onReasoning func(string)) (string, []ToolCall, *StreamResult, error) {
 	if rtCfg().MultiTurn && len(g.images) == 0 && g.modelCfg.Tool == 0 {
-		return callGeminiConv(g.messages, g.modelCfg, g.tools, g.toolChoice, onDelta, onReasoning)
+		return callGeminiConv(g.messages, g.modelCfg, g.tools, g.toolChoice, true, onDelta, onReasoning)
 	}
 	return callGemini(g.prompt, g.latest, g.modelCfg, g.tools, g.images, onDelta, onReasoning)
 }

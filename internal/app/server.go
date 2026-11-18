@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-const Version = "4.29.0"
+const Version = "4.29.1"
 
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	body, _ := json.Marshal(data)
@@ -274,7 +274,8 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	prompt, latest := messagesToPrompt(messages, tools, req["tool_choice"])
+	parallelTools := allowParallelToolCalls(req)
+	prompt, latest := messagesToPromptWithOptions(messages, tools, req["tool_choice"], parallelTools)
 	if strings.TrimSpace(prompt) == "" && len(images) == 0 {
 		writeJSON(w, 400, map[string]interface{}{"error": map[string]string{"message": "empty prompt"}})
 		return
@@ -314,7 +315,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	var res *StreamResult
 	if rtCfg().MultiTurn && len(images) == 0 && modelCfg.Tool == 0 {
 		// 多轮：按历史前缀识别续接，命中就只发新消息、历史留服务端。带 tools 也走这条。
-		text, toolCalls, res, err = callGeminiConv(messages, modelCfg, tools, req["tool_choice"], onDelta, onReasoning)
+		text, toolCalls, res, err = callGeminiConv(messages, modelCfg, tools, req["tool_choice"], parallelTools, onDelta, onReasoning)
 	} else {
 		text, toolCalls, res, err = callGemini(prompt, latest, modelCfg, tools, images, onDelta, onReasoning)
 	}
@@ -585,7 +586,8 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	prompt, latest := messagesToPrompt(messages, tools, req["tool_choice"])
+	parallelTools := allowParallelToolCalls(req)
+	prompt, latest := messagesToPromptWithOptions(messages, tools, req["tool_choice"], parallelTools)
 	if strings.TrimSpace(prompt) == "" && len(images) == 0 {
 		writeJSON(w, 400, map[string]interface{}{"error": map[string]string{"message": "empty input"}})
 		return
@@ -688,7 +690,7 @@ func handleResponses(w http.ResponseWriter, r *http.Request) {
 	var toolCalls []ToolCall
 	var res *StreamResult
 	if rtCfg().MultiTurn && len(images) == 0 && modelCfg.Tool == 0 {
-		text, toolCalls, res, err = callGeminiConv(messages, modelCfg, tools, req["tool_choice"], onDelta, nil)
+		text, toolCalls, res, err = callGeminiConv(messages, modelCfg, tools, req["tool_choice"], parallelTools, onDelta, nil)
 	} else {
 		text, toolCalls, res, err = callGemini(prompt, latest, modelCfg, tools, images, onDelta, nil)
 	}

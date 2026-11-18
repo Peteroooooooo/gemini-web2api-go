@@ -465,7 +465,7 @@ func streamGenerateConv(prompt string, mc ModelConfig, conv *convState,
 //
 // 支持 tools（续接里也解析 ```tool_call``` 围栏）；图片走原单轮路径（callGemini）。
 func callGeminiConv(messages []map[string]interface{}, mc ModelConfig,
-	tools []map[string]interface{}, toolChoice interface{},
+	tools []map[string]interface{}, toolChoice interface{}, parallelToolCalls bool,
 	onDelta, onReasoning func(string)) (string, []ToolCall, *StreamResult, error) {
 	parentKey := convParentKey(messages)
 	conv := convGet(parentKey)
@@ -475,7 +475,7 @@ func callGeminiConv(messages []map[string]interface{}, mc ModelConfig,
 	if fresh {
 		// 首轮带上 tools 指令：模型要靠它知道怎么吐 tool_call 围栏，续接轮不再重发
 		//（指令已在服务端首轮历史里）。
-		prompt, _ = messagesToPrompt(messages, tools, toolChoice)
+		prompt, _ = messagesToPromptWithOptions(messages, tools, toolChoice, parallelToolCalls)
 		logf("[conv] 新会话，首轮发 %d 字节（tools=%d）", len(prompt), len(tools))
 	} else {
 		prompt = formatNewTurn(messages[len(messages)-1])

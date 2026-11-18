@@ -50,7 +50,12 @@ type ToolCallFunction struct {
 // 转附件时用来内联，好让模型不必去文件里找问题。
 func messagesToPrompt(messages []map[string]interface{}, tools []map[string]interface{},
 	toolChoice interface{}) (string, string) {
-	return buildPrompt(messages, tools, toolChoice), latestUserMessage(messages)
+	return messagesToPromptWithOptions(messages, tools, toolChoice, true)
+}
+
+func messagesToPromptWithOptions(messages []map[string]interface{}, tools []map[string]interface{},
+	toolChoice interface{}, parallelToolCalls bool) (string, string) {
+	return buildPromptWithOptions(messages, tools, toolChoice, parallelToolCalls), latestUserMessage(messages)
 }
 
 // latestUserMessage 取最后一条 user 消息的正文，没有则返回空串。
@@ -68,6 +73,11 @@ func latestUserMessage(messages []map[string]interface{}) string {
 
 func buildPrompt(messages []map[string]interface{}, tools []map[string]interface{},
 	toolChoice interface{}) string {
+	return buildPromptWithOptions(messages, tools, toolChoice, true)
+}
+
+func buildPromptWithOptions(messages []map[string]interface{}, tools []map[string]interface{},
+	toolChoice interface{}, parallelToolCalls bool) string {
 	var parts []string
 
 	toolsInjected := false
@@ -101,9 +111,15 @@ func buildPrompt(messages []map[string]interface{}, tools []map[string]interface
 						"else — do not answer the question yourself, even if you know the answer.",
 					forced)
 			case mode == "required":
-				rule = "You MUST call one of the tools above. Reply with the tool_call block " +
-					"and nothing else — do not answer the question yourself, even if you " +
-					"know the answer."
+				if parallelToolCalls {
+					rule = "You MUST call one of the tools above (or multiple tools in parallel if needed). " +
+						"Reply with tool_call block(s) and nothing else — do not answer the question yourself, " +
+						"even if you know the answer."
+				} else {
+					rule = "You MUST call one of the tools above. Reply with the tool_call block " +
+						"and nothing else — do not answer the question yourself, even if you " +
+						"know the answer."
+				}
 			}
 			parts = append(parts, fmt.Sprintf(
 				"[System instruction]: You have access to tools. "+
@@ -168,24 +184,51 @@ func buildPrompt(messages []map[string]interface{}, tools []map[string]interface
 	// 工具名（shell_command）0/4 抄假名 —— 示例教的是「动作」不是名字，故不必按客户端
 	// 动态生成 schema。
 	if toolsInjected {
-		parts = append(parts,
-			"[System instruction — highest priority]: To run a command or read a file you MUST "+
-				"output a ```tool_call``` block — this is the ONLY execution channel. A "+
-				"```powershell/```bash/```cmd/```python code block is NOT executed, it is only shown "+
-				"to the user; never use one to run anything, and never claim you lack tools.\n"+
-				"Act, do not explain: when the request needs a tool, your reply is ONE ```tool_call``` "+
-				"block and nothing else — do not list the commands you 'would' run, do not output more "+
-				"than one tool_call, do not add prose. If several steps are needed, do the FIRST one "+
-				"now; you will be called again with its result to continue.\n"+
-				"Know when to STOP: once a tool result shows a step succeeded (for example it exited "+
-				"with code 0, even with no printed output), that step is DONE — do not run it again and "+
-				"do not retry the same thing a different way. When the whole request is accomplished, "+
-				"stop calling tools and reply with a short final answer instead of another tool_call.\n"+
-				"Example of a correct turn — user asks \"list the files here and tell me the size of "+
-				"README.md\", you reply with exactly one block and nothing else:\n"+
-				"```tool_call\n{\"name\": \"run_command\", \"arguments\": {\"command\": \"ls -la\"}}\n```\n"+
-				"(In your block use one of the real tool names listed above with its own arguments.) "+
-				"When the request needs a tool, emit the tool_call block now.")
+		if parallelToolCalls && forced == "" {
+			parts = append(parts,
+				"[Host Tool Bridge — Mandatory Output Format]:\n"+
+					"1. Mechanism: You are connected to a local coding orchestrator via text protocol. "+
+					"Your internal web-browser tools are NOT used here; instead, any ```tool_call``` JSON block "+
+					"you print is automatically parsed by the host program, executed locally on the user's disk, "+
+					"and fed back to you on the next turn.\n"+
+					"2. Always ready: Because ```tool_call``` is just a plain-text JSON output format parsed by the "+
+					"host, this channel is ALWAYS open on every turn. Never check internal execution status, "+
+					"never claim tools are unavailable/restricted, and never ask the user to paste files or run commands.\n"+
+					"3. No substitutes: When the user asks to inspect directories, read/analyze a file, create/edit "+
+					"a file, or run a command, NEVER output raw code blocks (```html, ```python, ```bash, etc.) "+
+					"for the user to save/run manually — emit ```tool_call``` block(s) ONLY, with zero prose.\n"+
+					"4. Parallel vs. sequential: Emit ALL independent ```tool_call``` blocks together in one reply "+
+					"(one JSON object per block). If a later step depends on an earlier output, emit only the "+
+					"earlier step(s) first and wait for the tool result.\n"+
+					"5. Stop rule: Once a tool result shows success (e.g. exit code 0, even with empty output), "+
+					"do not repeat it. When the entire task is done, reply with a concise final answer.\n"+
+					"Examples (use the exact tool names from Available tools above):\n"+
+					"- List/read multiple targets ->\n"+
+					"```tool_call\n{\"name\": \"Glob\", \"arguments\": {\"pattern\": \"*\"}}\n```\n"+
+					"```tool_call\n{\"name\": \"Read\", \"arguments\": {\"file_path\": \"foo.html\"}}\n```\n"+
+					"- Create/write a file ->\n"+
+					"```tool_call\n{\"name\": \"Write\", \"arguments\": {\"file_path\": \"index.html\", \"content\": \"<h1>Hi</h1>\"}}\n```\n"+
+					"FINAL DIRECTIVE: If the user's latest message asks to check files/directories, analyze a workspace "+
+					"file, or create/edit/run anything, start your reply immediately with ```tool_call right now.")
+		} else {
+			parts = append(parts,
+				"[Host Tool Bridge — Mandatory Output Format]:\n"+
+					"1. Mechanism: You are connected to a local coding orchestrator via text protocol. "+
+					"Your internal web-browser tools are NOT used here; instead, any ```tool_call``` JSON block "+
+					"you print is automatically parsed by the host program, executed locally on the user's disk, "+
+					"and fed back to you on the next turn.\n"+
+					"2. Always ready: Because ```tool_call``` is just a plain-text JSON output format parsed by the "+
+					"host, this channel is ALWAYS open on every turn. Never check internal execution status, "+
+					"never claim tools are unavailable/restricted, and never ask the user to paste files or run commands.\n"+
+					"3. No substitutes: Reply with ONE ```tool_call``` block and nothing else — never output raw "+
+					"code blocks (```html, ```python, ```bash, etc.) for the user to save/run manually.\n"+
+					"4. Stop rule: Once a tool result shows success (e.g. exit code 0, even with empty output), "+
+					"do not repeat it. When the entire task is done, reply with a concise final answer.\n"+
+					"Example (use the exact tool name from Available tools above):\n"+
+					"```tool_call\n{\"name\": \"Glob\", \"arguments\": {\"pattern\": \"*\"}}\n```\n"+
+					"FINAL DIRECTIVE: If the user's latest message asks to check files/directories, analyze a workspace "+
+					"file, or create/edit/run anything, start your reply immediately with ONE ```tool_call right now.")
+		}
 	}
 
 	var nonEmpty []string
@@ -530,6 +573,13 @@ func parseToolChoice(tc interface{}) (string, string) {
 		}
 	}
 	return "auto", ""
+}
+
+func allowParallelToolCalls(req map[string]interface{}) bool {
+	if v, ok := req["parallel_tool_calls"].(bool); ok {
+		return v
+	}
+	return true
 }
 
 // PromptTooLongError 表示 prompt 超过了单次请求能塞的上限。

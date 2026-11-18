@@ -232,3 +232,39 @@ func TestParseToolCallsOnlyBadFenceIsEmpty(t *testing.T) {
 		}
 	}
 }
+
+func TestParallelToolCallsPromptAndParse(t *testing.T) {
+	tools := []map[string]interface{}{
+		{
+			"type": "function",
+			"function": map[string]interface{}{
+				"name":        "read_file",
+				"description": "Read a file",
+				"parameters":  map[string]interface{}{"type": "object"},
+			},
+		},
+	}
+	msgs := []map[string]interface{}{{"role": "user", "content": "Read a.txt and b.txt"}}
+
+	parallelPrompt := buildPromptWithOptions(msgs, tools, "auto", true)
+	if !strings.Contains(parallelPrompt, "Emit ALL independent") {
+		t.Fatalf("expected parallel tool prompt, got: %s", parallelPrompt)
+	}
+	singlePrompt := buildPromptWithOptions(msgs, tools, "auto", false)
+	if !strings.Contains(singlePrompt, "Reply with ONE ```tool_call``` block") {
+		t.Fatalf("expected single tool prompt when parallel=false, got: %s", singlePrompt)
+	}
+
+	reply := "```tool_call\n{\"name\": \"read_file\", \"arguments\": {\"path\": \"a.txt\"}}\n```\n```tool_call\n{\"name\": \"read_file\", \"arguments\": {\"path\": \"b.txt\"}}\n```"
+	streamed := feed(t, chars(reply))
+	if strings.TrimSpace(streamed) != "" {
+		t.Fatalf("expected no leaked text for back-to-back tool fences, got %q", streamed)
+	}
+	clean, calls := parseToolCalls(reply)
+	if clean != "" || len(calls) != 2 {
+		t.Fatalf("expected 2 parallel calls and empty clean text, got clean=%q calls=%+v", clean, calls)
+	}
+	if calls[0].Function.Name != "read_file" || calls[1].Function.Name != "read_file" {
+		t.Fatalf("unexpected tool names: %+v", calls)
+	}
+}

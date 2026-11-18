@@ -2,6 +2,13 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 4.29.1
+
+### 变更
+
+- **支持并行多工具调用**：OpenAI `/v1/chat/completions` 与 `/v1/responses` 默认允许按 `parallel_tool_calls` 一次输出多个 `tool_call` 块（传入 `parallel_tool_calls: false` 或指定 `tool_choice` 时保持单工具）。
+- **强化编码场景 Tool Bridge 提示词**：在长上下文工具调用尾部明确隔离网页内置工具与外部文本协议通道，避免模型误判工具权限或调用额度耗尽，并禁止直接输出源码代码块替代写文件。
+
 ## 4.29.0
 
 2026-11 上游 Gemini 网页端换了一轮模型，这版跟着改。实测：付费号的模型选择器里只剩 3.5 Flash-Lite / 4 Hydrogen /
